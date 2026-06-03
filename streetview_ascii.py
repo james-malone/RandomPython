@@ -2,18 +2,23 @@
 Turn a Google Street View image into ASCII art, ready to paste into a Reddit
 post as a text-based GeoGuessr puzzle.
 
-This script fetches a single panorama-facing image from the Google Street View
-Static API for a given location (an address or a "lat,lng" pair), then renders
-it as luminance-mapped ASCII characters sized for a monospace code block.
+This script renders an image as luminance-mapped ASCII characters sized for a
+monospace code block. The image can come from either source:
 
-Requires a Google Maps API key with the "Street View Static API" enabled. The
-key can be supplied with --api-key or via the GOOGLE_STREET_VIEW_API_KEY (or
-GOOGLE_API_KEY) environment variable. Street View Static requests are billed by
-Google, so use this responsibly.
+* --location: fetch a single panorama-facing image from the Google Street View
+  Static API for an address or a "lat,lng" pair. Requires a Google Maps API key
+  with the "Street View Static API" enabled, supplied with --api-key or via the
+  GOOGLE_STREET_VIEW_API_KEY (or GOOGLE_API_KEY) environment variable. These
+  requests are billed by Google, so use them responsibly.
+* --image: read a local image file instead (e.g. a screenshot you grabbed from
+  Street View yourself). No API key, no network, no billing.
 
-Example:
+Examples:
 
     python streetview_ascii.py --location "48.8584,2.2945" --heading 230 \
+        --width 80 --reddit --out puzzle.txt
+
+    python streetview_ascii.py --image street_view_screenshot.png \
         --width 80 --reddit --out puzzle.txt
 
 @author - James Malone
@@ -135,7 +140,8 @@ def image_to_ascii(image, width, chars, char_aspect, invert, autocontrast):
     ramp = chars[::-1] if invert else chars
     scale = (len(ramp) - 1) / 255.0
 
-    pixels = list(gray.getdata())
+    # For an 'L' image this is one byte per pixel, i.e. the grayscale values.
+    pixels = gray.tobytes()
     rows = []
     for row_index in range(height):
         start = row_index * width
@@ -159,8 +165,11 @@ def build_arg_parser():
     parser = argparse.ArgumentParser(
         description='Turn a Google Street View image into Reddit-ready ASCII art.'
     )
-    parser.add_argument('-l', '--location', required=True,
+    parser.add_argument('-l', '--location',
                         help='Address or "lat,lng" pair to look at.')
+    parser.add_argument('-i', '--image',
+                        help='Use a local image file instead of fetching from '
+                             'Street View (e.g. a screenshot). No API key needed.')
     parser.add_argument('--heading', type=float, default=0,
                         help='Compass heading of the camera, 0-360 (default 0).')
     parser.add_argument('--pitch', type=float, default=0,
@@ -195,26 +204,38 @@ def main():
     parser = build_arg_parser()
     args = parser.parse_args()
 
-    api_key = resolve_api_key(args.api_key)
-    if not api_key:
-        sys.exit(
-            'No API key found. Pass --api-key or set one of: %s'
-            % ', '.join(API_KEY_ENV_VARS)
-        )
+    # Exactly one image source: a local file, or a Street View lookup.
+    if bool(args.image) == bool(args.location):
+        parser.error('provide exactly one of --image or --location.')
 
-    # Confirm there is actually imagery here before spending a billed request.
-    status, resolved = check_imagery_available(
-        args.location, args.heading, args.pitch, args.fov, api_key)
-    if status != 'OK':
-        sys.exit(
-            'No Street View imagery for "%s" (metadata status: %s).'
-            % (args.location, status)
-        )
-    if resolved:
-        print('Found imagery near %s' % resolved, file=sys.stderr)
+    if args.image:
+        # Local file path: no API key, no network, no billing.
+        try:
+            image = Image.open(args.image)
+        except (FileNotFoundError, OSError) as error:
+            sys.exit('Could not open image "%s": %s' % (args.image, error))
+    else:
+        api_key = resolve_api_key(args.api_key)
+        if not api_key:
+            sys.exit(
+                'No API key found. Pass --api-key, set one of: %s, '
+                'or use --image with a local file instead.'
+                % ', '.join(API_KEY_ENV_VARS)
+            )
 
-    image = fetch_streetview_image(
-        args.location, args.heading, args.pitch, args.fov, args.size, api_key)
+        # Confirm there is actually imagery here before spending a billed request.
+        status, resolved = check_imagery_available(
+            args.location, args.heading, args.pitch, args.fov, api_key)
+        if status != 'OK':
+            sys.exit(
+                'No Street View imagery for "%s" (metadata status: %s).'
+                % (args.location, status)
+            )
+        if resolved:
+            print('Found imagery near %s' % resolved, file=sys.stderr)
+
+        image = fetch_streetview_image(
+            args.location, args.heading, args.pitch, args.fov, args.size, api_key)
 
     ascii_art = image_to_ascii(
         image,
