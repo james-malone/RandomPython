@@ -21,11 +21,15 @@ Examples:
     python streetview_ascii.py --image street_view_screenshot.png \
         --width 80 --reddit --out puzzle.txt
 
+Pass --edges to trace edges with directional line strokes (-, /, |, \) for an
+outline look instead of solid brightness blocks.
+
 @author - James Malone
 """
 
 # Imports for this script
 import argparse
+import math
 import os
 import sys
 
@@ -48,6 +52,10 @@ DEFAULT_CHAR_ASPECT = 0.5
 
 # Street View Static caps standard (unsigned) requests at 640x640.
 DEFAULT_IMAGE_SIZE = '640x640'
+
+# Minimum Sobel gradient magnitude for a cell to be drawn as a directional edge
+# stroke (-, /, |, \) in --edges mode. Lower picks up more (and fainter) edges.
+DEFAULT_EDGE_THRESHOLD = 64
 
 # Reddit renders an indented block as monospaced code on both old and new Reddit.
 REDDIT_INDENT = '    '
@@ -115,12 +123,53 @@ def fetch_streetview_image(location, heading, pitch, fov, size, api_key):
     return Image.open(BytesIO(response.content))
 
 
-def image_to_ascii(image, width, chars, char_aspect, invert, autocontrast):
+def edge_stroke(pixels, x, y, width, height, threshold):
+    """
+    Return a directional line character (-, /, |, \\) for the edge passing
+    through cell (x, y), or None if the cell is not on a strong enough edge.
+
+    Uses a 3x3 Sobel operator to estimate the brightness gradient, then maps the
+    edge orientation (perpendicular to that gradient) to the nearest stroke.
+    """
+    # Border cells lack a full 3x3 neighbourhood, so they carry no stroke.
+    if x <= 0 or y <= 0 or x >= width - 1 or y >= height - 1:
+        return None
+
+    def at(col, row):
+        return pixels[row * width + col]
+
+    gx = ((at(x + 1, y - 1) + 2 * at(x + 1, y) + at(x + 1, y + 1))
+          - (at(x - 1, y - 1) + 2 * at(x - 1, y) + at(x - 1, y + 1)))
+    gy = ((at(x - 1, y + 1) + 2 * at(x, y + 1) + at(x + 1, y + 1))
+          - (at(x - 1, y - 1) + 2 * at(x, y - 1) + at(x + 1, y - 1)))
+
+    if math.hypot(gx, gy) < threshold:
+        return None
+
+    # The edge runs perpendicular to the gradient. Quantise that orientation
+    # into four strokes. y grows downward, so negate gy to read like screen
+    # space (this keeps / and \ on the visually correct diagonals).
+    angle = (math.degrees(math.atan2(-gy, gx)) + 90.0) % 180.0
+    if angle < 22.5 or angle >= 157.5:
+        return '-'
+    if angle < 67.5:
+        return '/'
+    if angle < 112.5:
+        return '|'
+    return '\\'
+
+
+def image_to_ascii(image, width, chars, char_aspect, invert, autocontrast,
+                   edges=False, edge_threshold=DEFAULT_EDGE_THRESHOLD):
     """
     Convert a PIL Image into an ASCII-art string. The image is resized to the
     requested character width (rows scaled by char_aspect to compensate for tall
     monospace cells), converted to grayscale, and each pixel is mapped onto the
     character ramp by brightness.
+
+    When edges is True, cells lying on a strong brightness edge are instead drawn
+    with a directional line stroke (-, /, |, \\) so outlines read as lines and
+    dashes, with the brightness ramp filling the flatter areas.
     """
     # Grayscale, with an optional contrast stretch that makes the art pop.
     gray = image.convert('L')
@@ -143,10 +192,16 @@ def image_to_ascii(image, width, chars, char_aspect, invert, autocontrast):
     # For an 'L' image this is one byte per pixel, i.e. the grayscale values.
     pixels = gray.tobytes()
     rows = []
-    for row_index in range(height):
-        start = row_index * width
-        row_pixels = pixels[start:start + width]
-        rows.append(''.join(ramp[int(value * scale)] for value in row_pixels))
+    for y in range(height):
+        row = []
+        for x in range(width):
+            stroke = (edge_stroke(pixels, x, y, width, height, edge_threshold)
+                      if edges else None)
+            if stroke is not None:
+                row.append(stroke)
+            else:
+                row.append(ramp[int(pixels[y * width + x] * scale)])
+        rows.append(''.join(row))
     return '\n'.join(rows)
 
 
@@ -184,6 +239,12 @@ def build_arg_parser():
                         help='Row scaling for tall monospace cells (default 0.5).')
     parser.add_argument('--invert', action='store_true',
                         help='Invert brightness mapping for dark backgrounds.')
+    parser.add_argument('--edges', action='store_true',
+                        help='Trace edges with directional strokes (- / | \\).')
+    parser.add_argument('--edge-threshold', type=float,
+                        default=DEFAULT_EDGE_THRESHOLD,
+                        help='Edge sensitivity for --edges (default %d; lower '
+                             'finds more edges).' % DEFAULT_EDGE_THRESHOLD)
     parser.add_argument('--no-autocontrast', action='store_true',
                         help='Disable the automatic contrast stretch.')
     parser.add_argument('--size', default=DEFAULT_IMAGE_SIZE,
@@ -244,6 +305,8 @@ def main():
         char_aspect=args.char_aspect,
         invert=args.invert,
         autocontrast=not args.no_autocontrast,
+        edges=args.edges,
+        edge_threshold=args.edge_threshold,
     )
 
     output = format_for_reddit(ascii_art) if args.reddit else ascii_art

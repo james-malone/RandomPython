@@ -31,11 +31,25 @@ python streetview_ascii.py --image street_view_screenshot.png \
     --width 80 --reddit --out puzzle.txt
 ```
 
+For an outline-style render that traces edges with directional line strokes
+(`-`, `/`, `|`, `\`) instead of solid blocks, add `--edges`:
+
+```
+python streetview_ascii.py --image shot.png --width 100 --edges --reddit \
+    --out puzzle.txt
+```
+
 Notes:
 * Provide exactly one of `--location` or `--image`.
 * `--location` accepts an address or a `lat,lng` pair.
 * `--image` reads any local image file (PNG, JPEG, etc.) with no API key.
 * `--heading`, `--pitch`, and `--fov` aim/zoom the camera (Street View only).
+* `--width` sets the detail level. ~70-80 is safest for a Reddit code block;
+  wider (120-200) gives higher fidelity but may scroll horizontally on narrow
+  or mobile views.
+* `--edges` overlays directional strokes on the brightness fill; pair it with a
+  blank `--chars '  '` for a pure line drawing, and tune `--edge-threshold`
+  (lower finds more, fainter edges).
 * `--reddit` indents every line by four spaces so it renders as a code block on
   old and new Reddit; paste the output straight into your post.
 * Default brightness mapping suits a light background. Use `--invert` for
